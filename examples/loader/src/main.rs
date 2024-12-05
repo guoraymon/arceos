@@ -7,17 +7,29 @@ use axstd::println;
 const PLASH_START: usize = 0xffff_ffc0_2200_0000;
 const HEADER_SIZE: usize = 4;
 
+fn slice_to_usize(slice: &[u8]) -> usize {
+    let mut bytes = [0u8; 8];
+    bytes[4..8].copy_from_slice(slice);
+    usize::from_be_bytes(bytes)
+}
+
 #[cfg_attr(feature = "axstd", no_mangle)]
 fn main() {
-    let image_start = PLASH_START as *const u8;
-    let header = unsafe { core::slice::from_raw_parts(image_start, HEADER_SIZE) };
-    let apps_size = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+    let mut apps_start = PLASH_START as *const u8;
 
     println!("Load payload ...");
 
-    let apps_start = unsafe { image_start.add(HEADER_SIZE) };
-    let code = unsafe { core::slice::from_raw_parts(apps_start, apps_size as usize) };
-    println!("content: {:?}: ", code);
+    loop {
+        let app_size =
+            slice_to_usize(unsafe { core::slice::from_raw_parts(apps_start, HEADER_SIZE) });
+        if app_size == 0 {
+            break;
+        }
+        apps_start = unsafe { apps_start.add(HEADER_SIZE) };
+        let code = unsafe { core::slice::from_raw_parts(apps_start, app_size as usize) };
+        println!("content: {:?}: ", code);
+        apps_start = unsafe { apps_start.add(app_size) };
+    }
 
     println!("Load payload ok!");
 }
