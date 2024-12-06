@@ -1,35 +1,73 @@
 #![cfg_attr(feature = "axstd", no_std)]
 #![cfg_attr(feature = "axstd", no_main)]
+#![feature(asm_const)]
 
 #[cfg(feature = "axstd")]
 use axstd::println;
 
 const PLASH_START: usize = 0xffff_ffc0_2200_0000;
-const HEADER_SIZE: usize = 4;
 
-fn slice_to_usize(slice: &[u8]) -> usize {
-    let mut bytes = [0u8; 8];
-    bytes[4..8].copy_from_slice(slice);
-    usize::from_be_bytes(bytes)
+struct Loader {
+    start: *const u8,
+}
+
+impl Loader {
+    pub fn load(&mut self, size: usize) -> &[u8] {
+        let data = unsafe { core::slice::from_raw_parts(self.start, size) };
+        self.start = self.start.wrapping_add(size);
+        data
+    }
+
+    pub fn load_u32(&mut self) -> u32 {
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(self.load(4));
+        u32::from_be_bytes(bytes)
+    }
 }
 
 #[cfg_attr(feature = "axstd", no_mangle)]
 fn main() {
-    let mut apps_start = PLASH_START as *const u8;
+    // app running aspace
+    // SBI(0x80000000) -> App <- Kernel(0x80200000)
+    // va_pa_offset: 0xffff_ffc0_0000_0000
+    const RUN_START: usize = 0xffff_ffc0_8010_0000;
+    let mut run_code_start: usize = RUN_START;
 
-    println!("Load payload ...");
-
+    let mut loader = Loader {
+        start: PLASH_START as *const u8,
+    };
     loop {
-        let app_size =
-            slice_to_usize(unsafe { core::slice::from_raw_parts(apps_start, HEADER_SIZE) });
+        println!("Load payload ...");
+
+        let app_size = loader.load_u32() as usize;
         if app_size == 0 {
             break;
         }
-        apps_start = unsafe { apps_start.add(HEADER_SIZE) };
-        let code = unsafe { core::slice::from_raw_parts(apps_start, app_size as usize) };
-        println!("content: {:?}: ", code);
-        apps_start = unsafe { apps_start.add(app_size) };
+
+        let load_code = loader.load(app_size);
+        println!(
+            "load code {:?}; address [{:?}]",
+            load_code,
+            load_code.as_ptr()
+        );
+
+        let run_code = unsafe { core::slice::from_raw_parts_mut(run_code_start as *mut u8, app_size) };
+        run_code.copy_from_slice(load_code);
+        run_code_start += app_size;
+        println!("run code {:?}; address [{:?}]", run_code, run_code.as_ptr());
+
+        println!("Load payload ok!");
     }
 
-    println!("Load payload ok!");
+    println!("Execute app ...");
+
+    // execute app
+    unsafe {
+        core::arch::asm!("
+            li      t2, {run_start}
+            jalr    t2
+            j       .",
+            run_start = const RUN_START,
+        )
+    }
 }
